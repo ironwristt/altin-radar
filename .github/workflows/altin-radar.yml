@@ -1,0 +1,40 @@
+name: AltinRadar32
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Repository'i indir
+        uses: actions/checkout@v6
+
+      - name: Python kur
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Paketleri kur
+        run: |
+          pip install -r requirements.txt
+
+      - name: AltinRadar32'i çalıştır
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        run: |
+          python bot.py
+
+      - name: State dosyasını kaydet
+        run: |
+          git config user.name "AltinRadar32 Bot"
+          git config user.email "actions@github.com"
+          git add state.json
+          git diff --cached --quiet || git commit -m "Update bot state"
+          git push
