@@ -3,7 +3,7 @@ name: AltinRadar32
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "* * * * *"
 
 concurrency:
   group: altin-radar
