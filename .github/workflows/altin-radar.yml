@@ -5,6 +5,10 @@ on:
   schedule:
     - cron: "*/5 * * * *"
 
+concurrency:
+  group: altin-radar
+  cancel-in-progress: false
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -15,6 +19,8 @@ jobs:
     steps:
       - name: Repository'i indir
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Python kur
         uses: actions/setup-python@v6
@@ -35,6 +41,16 @@ jobs:
         run: |
           git config user.name "AltinRadar32 Bot"
           git config user.email "actions@github.com"
+
           git add state.json
-          git diff --cached --quiet || git commit -m "Update bot state"
+
+          if git diff --cached --quiet; then
+            echo "State değişmedi."
+            exit 0
+          fi
+
+          git commit -m "Update bot state"
+
+          git pull --rebase origin main
+
           git push
