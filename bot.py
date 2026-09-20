@@ -1,44 +1,27 @@
+```python
 import os
-import time
 import json
 import requests
-from datetime import datetime, timezone, timedelta
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 STATE_FILE = "state.json"
 
-GOLD_URL = (
-    "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
-    "?range=1d&interval=5m"
-)
+GOLD_URL = "https://api.goldprice.dev/v1/prices"
+USDTRY_URL = "https://api.frankfurter.dev/v2/rate/usd/try"
 
-USDTRY_URL = (
-    "https://query1.finance.yahoo.com/v8/finance/chart/USDTRY=X"
-    "?range=1d&interval=5m"
-)
-
-NEWS_URL = (
-    "https://api.gdeltproject.org/api/v2/doc/doc"
-    "?query=gold%20OR%20XAU%20OR%20Fed%20OR%20inflation%20OR%20"
-    "interest%20rates%20OR%20central%20bank"
-    "&mode=artlist"
-    "&maxrecords=10"
-    "&format=json"
-    "&sort=datedesc"
-)
 
 def load_state():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except:
+    except Exception:
         return {
             "last_news": [],
             "last_gold": None,
-            "last_usdtry": None
+            "last_usdtry": None,
+            "last_update_id": None
         }
 
 
@@ -49,7 +32,7 @@ def save_state(state):
 
 def telegram_send(chat_id, message):
     try:
-        requests.post(
+        response = requests.post(
             f"{TELEGRAM_API}/sendMessage",
             json={
                 "chat_id": chat_id,
@@ -58,160 +41,131 @@ def telegram_send(chat_id, message):
             },
             timeout=20
         )
+
+        if not response.ok:
+            print("Telegram hatası:", response.text)
+
     except Exception as e:
         print("Telegram gönderim hatası:", e)
 
 
-def get_updates():
+def get_updates(offset=None):
     try:
-        r = requests.get(
+        params = {}
+
+        if offset is not None:
+            params["offset"] = offset
+
+        response = requests.get(
             f"{TELEGRAM_API}/getUpdates",
+            params=params,
             timeout=20
         )
-        return r.json()
+
+        response.raise_for_status()
+        return response.json()
+
     except Exception as e:
         print("Telegram update hatası:", e)
         return {}
 
 
-def get_market_price(url):
+def get_gold_price():
     try:
-        r = requests.get(url, timeout=20)
-        data = r.json()
+        response = requests.get(
+            GOLD_URL,
+            params={"symbol": "XAU-USD-SPOT"},
+            timeout=20
+        )
 
-        result = data["chart"]["result"][0]
-        meta = result["meta"]
+        response.raise_for_status()
 
-        price = meta.get("regularMarketPrice")
+        data = response.json()
 
-        if price is None:
-            quote = result["indicators"]["quote"][0]
-            closes = quote["close"]
-            price = closes[-1]
+        price = float(data["symbols"][0]["price"])
 
-        return float(price)
+        return price
 
     except Exception as e:
-        print("Piyasa verisi hatası:", e)
+        print("Altın verisi hatası:", e)
         return None
 
 
-def get_news():
+def get_usdtry():
     try:
-        r = requests.get(NEWS_URL, timeout=30)
-        data = r.json()
+        response = requests.get(
+            USDTRY_URL,
+            timeout=20
+        )
 
-        return data.get("articles", [])
+        response.raise_for_status()
+
+        data = response.json()
+
+        rate = float(data["rate"])
+
+        return rate
 
     except Exception as e:
-        print("Haber verisi hatası:", e)
-        return []
+        print("USD/TRY verisi hatası:", e)
+        return None
 
 
 def calculate_gram_gold(gold_usd, usdtry):
+
     if gold_usd is None or usdtry is None:
         return None
 
     return gold_usd * usdtry / 31.1034768
 
 
-def analyze_news(title):
-    text = title.lower()
+def send_market_status(chat_id):
 
-    positive_words = [
-        "rate cut",
-        "rate cuts",
-        "interest rate cut",
-        "dovish",
-        "lower rates",
-        "rate reduction",
-        "weak jobs",
-        "weak employment",
-        "recession",
-        "war",
-        "escalation",
-        "geopolitical tensions",
-        "central bank buying",
-        "gold purchases"
-    ]
+    gold_usd = get_gold_price()
+    usdtry = get_usdtry()
 
-    negative_words = [
-        "rate hike",
-        "rate hikes",
-        "hawkish",
-        "higher rates",
-        "strong jobs",
-        "strong employment",
-        "hot inflation",
-        "higher inflation",
-        "strong dollar",
-        "dollar rises",
-        "yield rises",
-        "treasury yields rise"
-    ]
+    gram_gold = calculate_gram_gold(
+        gold_usd,
+        usdtry
+    )
 
-    positive_score = sum(1 for word in positive_words if word in text)
-    negative_score = sum(1 for word in negative_words if word in text)
+    if gold_usd is None or usdtry is None:
 
-    if positive_score > negative_score:
-        return "POZİTİF", "Altın açısından yukarı yönlü destekleyici olabilir."
-    elif negative_score > positive_score:
-        return "NEGATİF", "Altın üzerinde aşağı yönlü baskı oluşturabilir."
-    else:
-        return "NÖTR", "Altın açısından belirgin bir yön sinyali vermiyor."
+        telegram_send(
+            chat_id,
+            "⚠️ Piyasa verisi şu anda alınamadı.\n\n"
+            "Lütfen birkaç dakika sonra tekrar deneyin."
+        )
 
-
-def create_market_message(gold_usd, usdtry, gram_gold, previous_gold):
-    if gram_gold is None:
-        return None
-
-    change = None
-
-    if previous_gold:
-        change = ((gold_usd - previous_gold) / previous_gold) * 100
-
-    if change is None:
-        trend = "Veri oluşturuluyor"
-    elif change > 0.5:
-        trend = "Yukarı yönlü hareket"
-    elif change < -0.5:
-        trend = "Aşağı yönlü hareket"
-    else:
-        trend = "Yatay / sınırlı hareket"
-
-    if change is not None and change < -1:
-        signal = "FIRSAT ALIMI İNCELENEBİLİR"
-    elif change is not None and change < -0.4:
-        signal = "KADEMELİ ALIM İNCELENEBİLİR"
-    elif change is not None and change > 1:
-        signal = "BEKLE / ACELE ETME"
-    else:
-        signal = "BEKLE / VERİ TAKİBİ"
+        return
 
     message = (
-        "🟡 ALTIN RADAR 32\n\n"
-        f"📊 XAU/USD: {gold_usd:.2f} USD\n"
+        "📊 GÜNCEL ALTIN DURUMU\n\n"
+        f"🥇 XAU/USD: {gold_usd:.2f} USD\n"
         f"💵 USD/TRY: {usdtry:.4f}\n"
-        f"🥇 Tahmini gram altın: {gram_gold:.2f} TL\n\n"
-        f"📈 Durum: {trend}\n"
+        f"🪙 Tahmini gram altın: {gram_gold:.2f} TL\n\n"
+        "ℹ️ Gram altın değeri, "
+        "ons altın × USD/TRY / 31.1034768 "
+        "formülüyle yaklaşık olarak hesaplanmıştır.\n\n"
+        "⚠️ Bu değer kuyumcu alış/satış fiyatı değildir."
     )
 
-    if change is not None:
-        message += f"📉 Değişim: %{change:.2f}\n"
-
-    message += (
-        f"\n🎯 Radar sinyali: {signal}\n\n"
-        "⚠️ Bu sinyal otomatik al-sat emri değildir. "
-        "Piyasa verilerine dayalı karar desteğidir.\n\n"
-        "💰 1.000.000 TL yatırım planında tek seferde işlem "
-        "yerine kademeli alım yaklaşımı değerlendirilebilir."
+    telegram_send(
+        chat_id,
+        message
     )
-
-    return message
 
 
 def process_commands(state):
-    updates = get_updates()
+
+    last_update_id = state.get("last_update_id")
+
+    offset = None
+
+    if last_update_id is not None:
+        offset = last_update_id + 1
+
+    updates = get_updates(offset)
 
     if not updates.get("ok"):
         return
@@ -223,9 +177,11 @@ def process_commands(state):
         message = update.get("message")
 
         if not message:
+            state["last_update_id"] = update_id
             continue
 
         chat_id = message["chat"]["id"]
+
         text = message.get("text", "").strip()
 
         if text == "/start":
@@ -238,7 +194,7 @@ def process_commands(state):
                 "/durum - Güncel altın durumu\n"
                 "/test - Telegram bağlantı testi\n"
                 "/id - Chat ID bilgisi\n\n"
-                "📡 Piyasa ve haber takibi otomatik yapılacaktır."
+                "📡 Piyasa takibi aktif."
             )
 
         elif text == "/test":
@@ -257,26 +213,7 @@ def process_commands(state):
 
         elif text == "/durum":
 
-            gold_usd = get_market_price(GOLD_URL)
-            usdtry = get_market_price(USDTRY_URL)
-
-            gram_gold = calculate_gram_gold(
-                gold_usd,
-                usdtry
-            )
-
-            if gram_gold:
-                telegram_send(
-                    chat_id,
-                    (
-                        "📊 GÜNCEL ALTIN DURUMU\n\n"
-                        f"XAU/USD: {gold_usd:.2f}\n"
-                        f"USD/TRY: {usdtry:.4f}\n"
-                        f"Tahmini gram altın: {gram_gold:.2f} TL\n\n"
-                        "ℹ️ Gram değer, ons altın ve USD/TRY "
-                        "üzerinden yaklaşık hesaplanmıştır."
-                    )
-                )
+            send_market_status(chat_id)
 
         state["last_update_id"] = update_id
 
@@ -285,12 +222,14 @@ def process_commands(state):
 
 def main():
 
+    print("🟡 AltınRadar32 başlatılıyor...")
+
     state = load_state()
 
     process_commands(state)
 
-    gold_usd = get_market_price(GOLD_URL)
-    usdtry = get_market_price(USDTRY_URL)
+    gold_usd = get_gold_price()
+    usdtry = get_usdtry()
 
     gram_gold = calculate_gram_gold(
         gold_usd,
@@ -301,103 +240,11 @@ def main():
     print("USD/TRY:", usdtry)
     print("Gram altın:", gram_gold)
 
-    if gold_usd is not None and usdtry is not None:
-
-        market_message = create_market_message(
-            gold_usd,
-            usdtry,
-            gram_gold,
-            state.get("last_gold")
-        )
-
-        # İlk çalışmada sadece veri kaydedilir.
-        if state.get("last_gold") is None:
-            state["last_gold"] = gold_usd
-            state["last_usdtry"] = usdtry
-
-        else:
-            # Büyük hareket varsa Telegram'a gönder.
-            change = (
-                (gold_usd - state["last_gold"])
-                / state["last_gold"]
-            ) * 100
-
-            if abs(change) >= 0.6:
-
-                updates = get_updates()
-
-                chat_ids = set()
-
-                for update in updates.get("result", []):
-                    msg = update.get("message")
-
-                    if msg:
-                        chat_ids.add(msg["chat"]["id"])
-
-                for chat_id in chat_ids:
-                    if market_message:
-                        telegram_send(
-                            chat_id,
-                            market_message
-                        )
-
-            state["last_gold"] = gold_usd
-            state["last_usdtry"] = usdtry
-
-    # Haber kontrolü
-    news = get_news()
-
-    old_news = set(state.get("last_news", []))
-
-    for article in news:
-
-        title = article.get("title", "")
-
-        if not title:
-            continue
-
-        url = article.get("url", "")
-
-        news_id = title + url
-
-        if news_id in old_news:
-            continue
-
-        impact, explanation = analyze_news(title)
-
-        if impact == "NÖTR":
-            continue
-
-        updates = get_updates()
-
-        chat_ids = set()
-
-        for update in updates.get("result", []):
-            msg = update.get("message")
-
-            if msg:
-                chat_ids.add(msg["chat"]["id"])
-
-        message = (
-            "🚨 ALTINRADAR32 HABER UYARISI\n\n"
-            f"📰 {title}\n\n"
-            f"📌 Etki: {impact}\n"
-            f"📊 Değerlendirme: {explanation}\n\n"
-            "💰 1.000.000 TL yatırım planı açısından "
-            "bu gelişme tek başına alım/satım kararı "
-            "olarak değerlendirilmemelidir.\n\n"
-            f"🔗 Kaynak: {url}"
-        )
-
-        for chat_id in chat_ids:
-            telegram_send(chat_id, message)
-
-        old_news.add(news_id)
-
-    state["last_news"] = list(old_news)[-100:]
-
     save_state(state)
+
+    print("✅ AltınRadar32 işlemi tamamlandı.")
 
 
 if __name__ == "__main__":
     main()
+```
