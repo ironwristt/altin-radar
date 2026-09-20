@@ -62,6 +62,7 @@ def get_updates(offset=None):
         )
 
         response.raise_for_status()
+
         return response.json()
 
     except Exception as e:
@@ -164,14 +165,25 @@ def process_commands(state):
     if last_update_id is not None:
         offset = last_update_id + 1
 
+    print("Telegram için kullanılan offset:", offset)
+
     updates = get_updates(offset)
 
+    print("Telegram update sonucu:", updates)
+    print(
+        "Telegram update sayısı:",
+        len(updates.get("result", []))
+    )
+
     if not updates.get("ok"):
+        print("Telegram update alınamadı.")
         return
 
     for update in updates.get("result", []):
 
         update_id = update.get("update_id")
+
+        print("İşlenen update ID:", update_id)
 
         message = update.get("message")
 
@@ -182,6 +194,9 @@ def process_commands(state):
         chat_id = message["chat"]["id"]
 
         text = message.get("text", "").strip()
+
+        print("Telegram mesajı:", text)
+        print("Chat ID:", chat_id)
 
         if text == "/start":
 
@@ -212,11 +227,18 @@ def process_commands(state):
 
         elif text == "/durum":
 
+            print("/durum komutu algılandı.")
+
             send_market_status(chat_id)
 
         state["last_update_id"] = update_id
 
     save_state(state)
+
+    print(
+        "Son işlenen update ID:",
+        state.get("last_update_id")
+    )
 
 
 def main():
@@ -224,6 +246,8 @@ def main():
     print("🟡 AltınRadar32 başlatılıyor...")
 
     state = load_state()
+
+    print("Mevcut state:", state)
 
     process_commands(state)
 
